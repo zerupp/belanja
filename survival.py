@@ -1,14 +1,19 @@
 import streamlit as st
 import pandas as pd
-import os
 from datetime import date, datetime, timedelta
 from fpdf import FPDF
+
+# 🚀 INTEGRASI GOOGLE SHEETS: Import library baru
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
 USER_PIN = "030517"
 
 # --- SETUP PAGE ---
 st.set_page_config(page_title="Estimation Kewangan - ZN", page_icon="📊", layout="wide")
+
+# 🚀 INTEGRASI GOOGLE SHEETS: Panggil connection awal-awal
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
 # 0. SISTEM KESELAMATAN (LOGIN)
@@ -31,7 +36,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ==========================================
-# FUNGSI PDF GENERATOR (V19 UPDATED)
+# FUNGSI PDF GENERATOR (Kekal sama macam asal)
 # ==========================================
 class PDF(FPDF):
     def __init__(self, title="LAPORAN KEWANGAN"):
@@ -55,11 +60,9 @@ def create_pdf(dataframe, current_bal):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # --- BAHAGIAN 1: SENARAI TRANSAKSI (DETAIL) ---
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(0, 10, "1. SENARAI TRANSAKSI TERPERINCI", 0, 1, 'L')
     
-    # Table Header
     pdf.set_font('Arial', 'B', 10)
     pdf.set_fill_color(200, 220, 255)
     pdf.cell(40, 10, 'TARIKH', 1, 0, 'C', 1)
@@ -67,7 +70,6 @@ def create_pdf(dataframe, current_bal):
     pdf.cell(30, 10, 'MASUK', 1, 0, 'C', 1)
     pdf.cell(30, 10, 'KELUAR', 1, 1, 'C', 1)
     
-    # Table Body
     pdf.set_font('Arial', '', 10)
     for index, row in dataframe.iterrows():
         item_text = str(row['Item']).encode('latin-1', 'replace').decode('latin-1')
@@ -81,34 +83,24 @@ def create_pdf(dataframe, current_bal):
             pdf.cell(30, 10, "-", 1, 0, 'C')
             pdf.cell(30, 10, f"{row['Keluar']:.2f}", 1, 1, 'R')
 
-    # Total Balance
     pdf.ln(5)
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(120, 10, "BAKI AKHIR SEKARANG:", 0, 0, 'R')
     pdf.set_text_color(0, 100, 0)
     pdf.cell(60, 10, f"RM {current_bal:.2f}", 0, 1, 'L')
     
-    # --- BAHAGIAN 2: ANALISIS GROUPING (NEW!) ---
-    pdf.add_page() # Masuk page baru supaya kemas
-    pdf.set_text_color(0, 0, 0) # Reset warna hitam
+    pdf.add_page() 
+    pdf.set_text_color(0, 0, 0) 
     
-    # Proses Data (Pandas Magic)
     df_calc = dataframe.copy()
-    # Convert string tarikh ke object datetime
     df_calc['DT'] = pd.to_datetime(df_calc['Tarikh']) 
     df_calc['DateOnly'] = df_calc['DT'].dt.date
     df_calc['MonthStr'] = df_calc['DT'].dt.strftime('%B %Y')
     
-    # Filter: Kita cuma nak kira DUIT KELUAR (Belanja)
     df_expenses = df_calc[df_calc['Keluar'] > 0]
-    
-    # Grouping Harian
     daily_stats = df_expenses.groupby('DateOnly')['Keluar'].sum().reset_index()
-    
-    # Grouping Bulanan
     monthly_stats = df_expenses.groupby('MonthStr')['Keluar'].sum().reset_index()
     
-    # --- TABLE A: TOTAL HARIAN ---
     pdf.set_font('Arial', 'B', 14)
     pdf.cell(0, 10, "RINGKASAN PERBELANJAAN", 0, 1, 'L')
     pdf.ln(5)
@@ -117,7 +109,7 @@ def create_pdf(dataframe, current_bal):
     pdf.cell(0, 10, "A. TOTAL BELANJA HARIAN (Daily)", 0, 1, 'L')
     
     pdf.set_font('Arial', 'B', 10)
-    pdf.set_fill_color(220, 220, 220) # Kelabu cair
+    pdf.set_fill_color(220, 220, 220) 
     pdf.cell(60, 10, "TARIKH", 1, 0, 'C', 1)
     pdf.cell(60, 10, "TOTAL HANGUS (RM)", 1, 1, 'C', 1)
     
@@ -128,7 +120,6 @@ def create_pdf(dataframe, current_bal):
         
     pdf.ln(10)
     
-    # --- TABLE B: TOTAL BULANAN ---
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(0, 10, "B. TOTAL BELANJA BULANAN (Monthly)", 0, 1, 'L')
     
@@ -174,27 +165,29 @@ def create_expense_pdf(dataframe):
     return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# LOAD DATA
+# 🚀 INTEGRASI GOOGLE SHEETS: LOAD DATA BARU
 # ==========================================
-DATA_FILE = 'data_survival.csv'
-CONFIG_FILE = 'config_survival.txt'
-
 def load_data():
-    if not os.path.exists(DATA_FILE):
-        df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
-        df.to_csv(DATA_FILE, index=False)
-    else:
-        df = pd.read_csv(DATA_FILE)
-        if "Masuk" not in df.columns:
+    # Baca data transaksi dari Google Sheets
+    try:
+        df = conn.read(worksheet="Transaksi", usecols=[0, 1, 2, 3])
+        df = df.dropna(how="all") # Buang row kosong
+        if df.empty:
             df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
+    except:
+        df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
     
+    # Baca data config dari Google Sheets
     config = {}
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            lines = f.readlines()
-            if len(lines) >= 2:
-                config['budget'] = float(lines[0].strip())
-                config['target_date'] = lines[1].strip()
+    try:
+        df_config = conn.read(worksheet="Config", usecols=[0, 1])
+        df_config = df_config.dropna(how="all")
+        if not df_config.empty:
+            config['budget'] = float(df_config.iloc[0]['Budget'])
+            config['target_date'] = str(df_config.iloc[0]['Target_Date'])
+    except:
+        pass
+        
     return df, config
 
 # ==========================================
@@ -218,15 +211,21 @@ if not config:
         input_tarikh = st.date_input("Target Hari:", min_value=date.today())
         submitted = st.form_submit_button("MULA")
         if submitted:
-            with open(CONFIG_FILE, "w") as f:
-                f.write(f"{input_duit}\n")
-                f.write(f"{input_tarikh}")
+            # 🚀 INTEGRASI GOOGLE SHEETS: Save config ke Google Sheets
+            new_config = pd.DataFrame([{"Budget": input_duit, "Target_Date": str(input_tarikh)}])
+            conn.update(worksheet="Config", data=new_config)
             st.rerun()
 
 # --- FASA 2: DASHBOARD ---
 else:
     initial_budget = config['budget']
-    target_date_obj = datetime.strptime(config['target_date'], "%Y-%m-%d").date()
+    
+    # Perbaiki isu tarikh dari sheets
+    if len(config['target_date']) > 10:
+        clean_date = config['target_date'][:10]
+    else:
+        clean_date = config['target_date']
+    target_date_obj = datetime.strptime(clean_date, "%Y-%m-%d").date()
     
     total_masuk = df['Masuk'].sum()
     total_keluar = df['Keluar'].sum()
@@ -245,26 +244,21 @@ else:
     # ==========================================
     # SIDEBAR: SIMULASI (HARI UTAMA)
     # ==========================================
-    
     if current_balance > 0:
         st.sidebar.header("🧮 Simulation DUIT")
         st.sidebar.caption("Tarik slider untuk tengok realiti:")
         
         sim_daily = st.sidebar.slider("Belanja Harian (RM):", 1.0, 50.0, 5.0, step=0.5)
         
-        # LOGIC PENGIRAAN
         sim_days = int(current_balance / sim_daily)
         sim_end_date = today + timedelta(days=sim_days)
         sim_extra = current_balance % sim_daily
         
-        # DISPLAY UTAMA (HARI)
         st.sidebar.markdown(f"## ⏳ **{sim_days} HARI**")
         st.sidebar.write(f"📅 Tarikh Licin: **{sim_end_date.strftime('%d %b %Y')}**")
-        #st.sidebar.caption(f"Syiling baki: RM {sim_extra:.2f}")
 
         st.sidebar.divider()
         
-        # Check vs Target (Merah/Hijau sekadar info)
         if sim_days < days_left:
             amount_needed = (sim_daily * days_left) - current_balance
             st.sidebar.error(
@@ -310,8 +304,10 @@ else:
             if st.form_submit_button("🔥 TOLAK BAKI", use_container_width=True):
                 if item_out and price_out > 0:
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    new_row = pd.DataFrame({"Tarikh": [ts], "Item": [item_out], "Masuk": [0.0], "Keluar": [price_out]})
-                    new_row.to_csv(DATA_FILE, mode='a', header=False, index=False)
+                    # 🚀 INTEGRASI GOOGLE SHEETS: Tolak duit save ke Sheets
+                    new_row = pd.DataFrame([{"Tarikh": ts, "Item": item_out, "Masuk": 0.0, "Keluar": price_out}])
+                    updated_df = pd.concat([df, new_row], ignore_index=True)
+                    conn.update(worksheet="Transaksi", data=updated_df)
                     st.toast("✅ Disimpan")
                     st.rerun()
 
@@ -323,8 +319,10 @@ else:
             if st.form_submit_button("💚 TAMBAH DUIT", type="primary", use_container_width=True):
                 if item_in and price_in > 0:
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    new_row = pd.DataFrame({"Tarikh": [ts], "Item": [item_in], "Masuk": [price_in], "Keluar": [0.0]})
-                    new_row.to_csv(DATA_FILE, mode='a', header=False, index=False)
+                    # 🚀 INTEGRASI GOOGLE SHEETS: Tambah duit save ke Sheets
+                    new_row = pd.DataFrame([{"Tarikh": ts, "Item": item_in, "Masuk": price_in, "Keluar": 0.0}])
+                    updated_df = pd.concat([df, new_row], ignore_index=True)
+                    conn.update(worksheet="Transaksi", data=updated_df)
                     st.balloons()
                     st.rerun()
 
@@ -336,7 +334,6 @@ else:
         col_pdf1, col_pdf2, col_space = st.columns([1, 1, 3])
         
         with col_pdf1:
-            # PANGGIL FUNGSI PDF BARU DI SINI
             pdf_full = create_pdf(df, current_balance)
             st.download_button("📄 Full Report + Analisa", pdf_full, f"Laporan_Lengkap_{date.today()}.pdf", "application/pdf")
             
@@ -367,8 +364,9 @@ else:
                 c4.write(f"{row['Keluar']:.2f}")
 
             if c5.button("❌", key=f"d_{i}"):
-                df = df.drop(i)
-                df.to_csv(DATA_FILE, index=False)
+                # 🚀 INTEGRASI GOOGLE SHEETS: Delete row dari Sheets
+                df_updated = df.drop(i)
+                conn.update(worksheet="Transaksi", data=df_updated)
                 st.rerun()
     else:
         st.info("Tiada rekod.")
@@ -380,13 +378,14 @@ else:
         st.caption(f"Tarikh sekarang: {target_date_obj.strftime('%d %b %Y')}")
         new_target_date = st.date_input("Pilih Tarikh Baru:", value=target_date_obj)
         if st.button("Simpan Tarikh Baru"):
-            with open(CONFIG_FILE, "w") as f:
-                f.write(f"{initial_budget}\n")
-                f.write(f"{new_target_date}")
+            # 🚀 INTEGRASI GOOGLE SHEETS: Update tarikh kat Sheets
+            new_config = pd.DataFrame([{"Budget": initial_budget, "Target_Date": str(new_target_date)}])
+            conn.update(worksheet="Config", data=new_config)
             st.rerun()
             
         st.divider()
         if st.button("FORMAT / RESET SEMUA DATA", type="primary"):
-            if os.path.exists(DATA_FILE): os.remove(DATA_FILE)
-            if os.path.exists(CONFIG_FILE): os.remove(CONFIG_FILE)
+            # 🚀 INTEGRASI GOOGLE SHEETS: Clear data dalam Sheets
+            conn.clear(worksheet="Transaksi")
+            conn.clear(worksheet="Config")
             st.rerun()
