@@ -168,24 +168,26 @@ def create_expense_pdf(dataframe):
 # 🚀 INTEGRASI GOOGLE SHEETS: LOAD DATA BARU
 # ==========================================
 def load_data():
-    # Baca data transaksi dari Google Sheets
+    # Tambah ttl=0 supaya dia tak simpan cache lama
     try:
-        df = conn.read(worksheet="Transaksi", usecols=[0, 1, 2, 3])
-        df = df.dropna(how="all") # Buang row kosong
+        df = conn.read(worksheet="Transaksi", usecols=[0, 1, 2, 3], ttl=0)
+        df = df.dropna(how="all") 
         if df.empty:
             df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
     except:
         df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
     
-    # Baca data config dari Google Sheets
     config = {}
     try:
-        df_config = conn.read(worksheet="Config", usecols=[0, 1])
+        # Tambah ttl=0 kat sini juga
+        df_config = conn.read(worksheet="Config", usecols=[0, 1], ttl=0)
         df_config = df_config.dropna(how="all")
         if not df_config.empty:
-            config['budget'] = float(df_config.iloc[0]['Budget'])
-            config['target_date'] = str(df_config.iloc[0]['Target_Date'])
-    except:
+            # Kita ambil row paling bawah (terbaru) kalau ada banyak entry
+            config['budget'] = float(df_config.iloc[-1]['Budget'])
+            config['target_date'] = str(df_config.iloc[-1]['Target_Date'])
+    except Exception as e:
+        # st.error(f"Error loading config: {e}") # Debug kalau perlu
         pass
         
     return df, config
@@ -211,11 +213,10 @@ if not config:
         input_tarikh = st.date_input("Target Hari:", min_value=date.today())
         submitted = st.form_submit_button("MULA")
         if submitted:
-            # 🚀 INTEGRASI GOOGLE SHEETS: Save config ke Google Sheets
             new_config = pd.DataFrame([{"Budget": input_duit, "Target_Date": str(input_tarikh)}])
             conn.update(worksheet="Config", data=new_config)
+            st.cache_data.clear() # <--- Tambah ni
             st.rerun()
-
 # --- FASA 2: DASHBOARD ---
 else:
     initial_budget = config['budget']
