@@ -161,7 +161,7 @@ def create_expense_pdf(dataframe):
     return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# LOAD DATA (TERMASUK KOMITMEN)
+# LOAD DATA (TERMASUK STATUS KOMITMEN)
 # ==========================================
 def load_data():
     try:
@@ -184,12 +184,16 @@ def load_data():
         
     # --- LOAD KOMITMEN ---
     try:
-        df_komitmen = conn.read(worksheet="Komitmen", usecols=[0, 1], ttl=0)
+        # Tambah baca column ke-3 (Status)
+        df_komitmen = conn.read(worksheet="Komitmen", usecols=[0, 1, 2], ttl=0)
         df_komitmen = df_komitmen.dropna(how="all")
         if df_komitmen.empty:
-            df_komitmen = pd.DataFrame(columns=["Item", "Jumlah"])
+            df_komitmen = pd.DataFrame(columns=["Item", "Jumlah", "Status"])
+        # Safety net kalau column Status takde
+        if 'Status' not in df_komitmen.columns:
+            df_komitmen['Status'] = 'Belum'
     except:
-        df_komitmen = pd.DataFrame(columns=["Item", "Jumlah"])
+        df_komitmen = pd.DataFrame(columns=["Item", "Jumlah", "Status"])
         
     return df, config, df_komitmen
 
@@ -233,9 +237,13 @@ else:
     total_masuk = df['Masuk'].sum()
     total_keluar = df['Keluar'].sum()
     
-    # PENGIRAAN BARU: TOLAK KOMITMEN SIAP-SIAP
-    total_komitmen = df_komitmen['Jumlah'].sum() if not df_komitmen.empty else 0.0
-    current_balance = (initial_budget + total_masuk) - total_keluar - total_komitmen
+    # 🚀 PENGIRAAN BARU: Cuma tolak komitmen yang "Belum" dibayar sahaja
+    if not df_komitmen.empty:
+        total_komitmen_pending = df_komitmen[df_komitmen['Status'] != 'Sudah']['Jumlah'].sum()
+    else:
+        total_komitmen_pending = 0.0
+
+    current_balance = (initial_budget + total_masuk) - total_keluar - total_komitmen_pending
     
     today = date.today()
     days_left = (target_date_obj - today).days
@@ -296,10 +304,10 @@ else:
     st.divider()
 
     # ==========================================
-    # RUANGAN KOMITMEN BARU
+    # 🚀 RUANGAN KOMITMEN BARU (DENGAN BUTANG BAYAR)
     # ==========================================
-    with st.expander(f"📌 Komitmen Wajib (Total: RM {total_komitmen:.2f})"):
-        st.caption("Duit ni akan ditolak awal-awal dari baki nyawa supaya kau tak terguna.")
+    with st.expander(f"📌 Komitmen Wajib (Pending: RM {total_komitmen_pending:.2f})"):
+        st.caption("Klik '💸 Bayar' dan ia akan automatik masuk ke rekod Duit Keluar.")
         
         # Form tambah komitmen
         with st.form("tambah_komitmen"):
@@ -309,7 +317,7 @@ else:
             
             if st.form_submit_button("➕ Tambah Komitmen", use_container_width=True):
                 if k_item and k_harga > 0:
-                    new_komitmen = pd.DataFrame([{"Item": k_item, "Jumlah": k_harga}])
+                    new_komitmen = pd.DataFrame([{"Item": k_item, "Jumlah": k_harga, "Status": "Belum"}])
                     updated_komitmen = pd.concat([df_komitmen, new_komitmen], ignore_index=True)
                     conn.update(worksheet="Komitmen", data=updated_komitmen)
                     st.cache_data.clear()
@@ -318,15 +326,40 @@ else:
         # List Komitmen
         if not df_komitmen.empty:
             st.write("**Senarai Komitmen Semasa:**")
+            st.divider()
             for i, row in df_komitmen.iterrows():
-                c1, c2, c3 = st.columns([3, 1, 1])
+                # Adjusted column width to fit buttons nicely
+                c1, c2, c3, c4 = st.columns([2.5, 1, 1.2, 0.5])
                 c1.write(f"▪️ {row['Item']}")
                 c2.write(f"RM {row['Jumlah']:.2f}")
-                if c3.button("❌", key=f"k_{i}"):
+                
+                # Check Status
+                if row.get('Status', 'Belum') == 'Sudah':
+                    c3.success("✅ Dah Bayar")
+                else:
+                    if c3.button("💸 Bayar", key=f"pay_{i}"):
+                        # 1. Update status jadi 'Sudah' kat Komitmen sheet
+                        df_komitmen.at[i, 'Status'] = 'Sudah'
+                        conn.update(worksheet="Komitmen", data=df_komitmen)
+                        
+                        # 2. Automatik tambah ke Transaksi Duit Keluar
+                        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        auto_item_name = f"[Komitmen] {row['Item']}"
+                        new_tx = pd.DataFrame([{"Tarikh": ts, "Item": auto_item_name, "Masuk": 0.0, "Keluar": row['Jumlah']}])
+                        updated_df = pd.concat([df, new_tx], ignore_index=True)
+                        conn.update(worksheet="Transaksi", data=updated_df)
+                        
+                        st.cache_data.clear()
+                        st.toast(f"✅ {row['Item']} direkod masuk Duit Keluar!")
+                        st.rerun()
+                        
+                if c4.button("❌", key=f"k_{i}"):
                     df_k_updated = df_komitmen.drop(i)
                     conn.update(worksheet="Komitmen", data=df_k_updated)
                     st.cache_data.clear()
                     st.rerun()
+
+    st.divider()
 
     # INPUT DATA TRANSAKSI HARIAN
     st.subheader("📝 Rekod Transaksi Harian")
