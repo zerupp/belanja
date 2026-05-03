@@ -187,10 +187,20 @@ def load_data():
             config['budget'] = float(df_config.iloc[-1]['Budget'])
             config['target_date'] = str(df_config.iloc[-1]['Target_Date'])
     except Exception as e:
-        # st.error(f"Error loading config: {e}") # Debug kalau perlu
         pass
+
+    # ---> TAMBAH: BACA TAB KOMITMEN <---
+    try:
+        df_komitmen = conn.read(worksheet="Komitmen", usecols=[0, 1, 2], ttl=0)
+        df_komitmen = df_komitmen.dropna(how="all")
+        if df_komitmen.empty:
+            df_komitmen = pd.DataFrame(columns=["Item", "Jumlah", "Status"])
+        elif 'Status' not in df_komitmen.columns:
+            df_komitmen['Status'] = 'Belum'
+    except:
+        df_komitmen = pd.DataFrame(columns=["Item", "Jumlah", "Status"])
         
-    return df, config
+    return df, config, df_komitmen # Return 3 data
 
 # ==========================================
 # MAIN APP
@@ -203,7 +213,8 @@ with st.sidebar:
         st.rerun()
     st.divider()
 
-df, config = load_data()
+# TERIMA 3 DATA
+df, config, df_komitmen = load_data()
 
 # --- FASA 1: SETUP ---
 if not config:
@@ -291,6 +302,60 @@ else:
         else:
             st.success(f"🟢 OKAY: RM{daily_budget:.2f}. Sedap.")
 
+    st.divider()
+
+    # ==========================================
+    # ---> SECTION BARU: KOMITMEN SAHAJA <---
+    # ==========================================
+    total_komitmen = df_komitmen['Jumlah'].sum() if not df_komitmen.empty else 0.0
+    total_pending = df_komitmen[df_komitmen['Status'] != 'Sudah']['Jumlah'].sum() if not df_komitmen.empty else 0.0
+
+    with st.expander(f"📌 Pengurusan Komitmen (Total Pending: RM {total_pending:.2f})"):
+        st.caption("Senarai bil/komitmen. Baki utama hanya akan ditolak bila butang '💸 Bayar' ditekan.")
+        
+        with st.form("tambah_komitmen"):
+            k_col1, k_col2 = st.columns([3, 1])
+            k_item = k_col1.text_input("Nama Komitmen (cth: Sewa)")
+            k_harga = k_col2.number_input("Jumlah (RM)", min_value=0.0, step=0.1, format="%.2f")
+            
+            if st.form_submit_button("➕ Tambah Komitmen", use_container_width=True):
+                if k_item and k_harga > 0:
+                    new_k = pd.DataFrame([{"Item": k_item, "Jumlah": k_harga, "Status": "Belum"}])
+                    updated_k = pd.concat([df_komitmen, new_k], ignore_index=True)
+                    conn.update(worksheet="Komitmen", data=updated_k)
+                    st.cache_data.clear()
+                    st.rerun()
+
+        if not df_komitmen.empty:
+            st.divider()
+            for i, row in df_komitmen.iterrows():
+                c1, c2, c3, c4 = st.columns([3, 1, 1.5, 0.5])
+                c1.write(f"▪️ {row['Item']}")
+                c2.write(f"RM {row['Jumlah']:.2f}")
+                
+                if row.get('Status', 'Belum') == 'Sudah':
+                    c3.success("✅ Dibayar")
+                else:
+                    if c3.button("💸 Bayar", key=f"pay_{i}"):
+                        # 1. Update status di tab Komitmen
+                        df_komitmen.at[i, 'Status'] = 'Sudah'
+                        conn.update(worksheet="Komitmen", data=df_komitmen)
+                        
+                        # 2. Rekod masuk ke Transaksi utama supaya Baki Nyawa ditolak
+                        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        new_tx = pd.DataFrame([{"Tarikh": ts, "Item": f"[Komitmen] {row['Item']}", "Masuk": 0.0, "Keluar": row['Jumlah']}])
+                        updated_df = pd.concat([df, new_tx], ignore_index=True)
+                        conn.update(worksheet="Transaksi", data=updated_df)
+                        
+                        st.cache_data.clear()
+                        st.rerun()
+                        
+                if c4.button("❌", key=f"del_k_{i}"):
+                    df_k_updated = df_komitmen.drop(i)
+                    conn.update(worksheet="Komitmen", data=df_k_updated)
+                    st.cache_data.clear()
+                    st.rerun()
+                    
     st.divider()
 
     # INPUT DATA
@@ -389,4 +454,9 @@ else:
             # 🚀 INTEGRASI GOOGLE SHEETS: Clear data dalam Sheets
             conn.clear(worksheet="Transaksi")
             conn.clear(worksheet="Config")
+            # Clear tab Komitmen sekali kalau buat reset
+            try:
+                conn.clear(worksheet="Komitmen")
+            except:
+                pass
             st.rerun()
