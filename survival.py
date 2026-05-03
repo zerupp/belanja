@@ -85,9 +85,9 @@ def create_pdf(dataframe, current_bal):
     pdf.set_text_color(0, 100, 0)
     pdf.cell(60, 10, f"RM {current_bal:.2f}", 0, 1, 'L')
     
+    # --- PAGE 2: ANALISIS ---
     pdf.add_page() 
     pdf.set_text_color(0, 0, 0) 
-    
     df_calc = dataframe.copy()
     df_calc['DT'] = pd.to_datetime(df_calc['Tarikh']) 
     df_calc['DateOnly'] = df_calc['DT'].dt.date
@@ -161,9 +161,10 @@ def create_expense_pdf(dataframe):
     return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# LOAD DATA (TERMASUK STATUS KOMITMEN)
+# 🚀 LOAD DATA (DENGAN FIX BUG SETUP)
 # ==========================================
 def load_data():
+    # 1. Load Transaksi
     try:
         df = conn.read(worksheet="Transaksi", usecols=[0, 1, 2, 3], ttl=0)
         df = df.dropna(how="all") 
@@ -172,6 +173,7 @@ def load_data():
     except:
         df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
     
+    # 2. Load Config
     config = {}
     try:
         df_config = conn.read(worksheet="Config", usecols=[0, 1], ttl=0)
@@ -182,14 +184,12 @@ def load_data():
     except:
         pass
         
-    # --- LOAD KOMITMEN ---
+    # 3. Load Komitmen
     try:
-        # Tambah baca column ke-3 (Status)
         df_komitmen = conn.read(worksheet="Komitmen", usecols=[0, 1, 2], ttl=0)
         df_komitmen = df_komitmen.dropna(how="all")
         if df_komitmen.empty:
             df_komitmen = pd.DataFrame(columns=["Item", "Jumlah", "Status"])
-        # Safety net kalau column Status takde
         if 'Status' not in df_komitmen.columns:
             df_komitmen['Status'] = 'Belum'
     except:
@@ -208,7 +208,6 @@ with st.sidebar:
         st.rerun()
     st.divider()
 
-# TERIMA 3 DATA DARI LOAD_DATA
 df, config, df_komitmen = load_data()
 
 # --- FASA 1: SETUP ---
@@ -237,14 +236,17 @@ else:
     total_masuk = df['Masuk'].sum()
     total_keluar = df['Keluar'].sum()
     
-    # 🚀 PENGIRAAN BARU: Cuma tolak komitmen yang "Belum" dibayar sahaja
+    # 🚀 LOGIK BARU: Baki Nyawa sekarang HANYA kira transaksi yang dah masuk/keluar
+    current_balance = (initial_budget + total_masuk) - total_keluar
+    
+    # Kira baki "bayangan" selepas semua komitmen pending ditolak
     if not df_komitmen.empty:
         total_komitmen_pending = df_komitmen[df_komitmen['Status'] != 'Sudah']['Jumlah'].sum()
     else:
         total_komitmen_pending = 0.0
-
-    current_balance = (initial_budget + total_masuk) - total_keluar - total_komitmen_pending
     
+    balance_after_commitments = current_balance - total_komitmen_pending
+
     today = date.today()
     days_left = (target_date_obj - today).days
     
@@ -252,38 +254,31 @@ else:
         daily_budget = 0
         status_msg = "MERDEKA!"
     else:
-        daily_budget = current_balance / days_left
+        # Kita gunakan balance_after_commitments untuk kira limit harian supaya kau tak ter-belanja duit bil
+        daily_budget = balance_after_commitments / days_left
         status_msg = f"RM {daily_budget:.2f} /hari"
 
     # ==========================================
-    # SIDEBAR: SIMULASI (HARI UTAMA)
+    # SIDEBAR: SIMULASI
     # ==========================================
     if current_balance > 0:
         st.sidebar.header("🧮 Simulation DUIT")
         st.sidebar.caption("Tarik slider untuk tengok realiti:")
-        
         sim_daily = st.sidebar.slider("Belanja Harian (RM):", 1.0, 50.0, 5.0, step=0.5)
         
-        sim_days = int(current_balance / sim_daily)
+        # Simulasi guna duit yang dah ditolak komitmen
+        sim_days = int(balance_after_commitments / sim_daily) if balance_after_commitments > 0 else 0
         sim_end_date = today + timedelta(days=sim_days)
         
         st.sidebar.markdown(f"## ⏳ **{sim_days} HARI**")
         st.sidebar.write(f"📅 Tarikh Licin: **{sim_end_date.strftime('%d %b %Y')}**")
+        st.sidebar.caption("(Berdasarkan baki selepas komitmen)")
         st.sidebar.divider()
         
         if sim_days < days_left:
-            amount_needed = (sim_daily * days_left) - current_balance
-            st.sidebar.error(
-                f"🚨 **TAK CUKUP!**\n"
-                f"Target exam lagi {days_left} hari.\n"
-                f"Defisit: **-RM {amount_needed:.2f}**"
-            )
+            st.sidebar.error(f"🚨 **TAK CUKUP!**\nTarget exam lagi {days_left} hari.")
         else:
-            amount_left = current_balance - (sim_daily * days_left)
-            st.sidebar.success(
-                f"✅ **LEPAS TARGET!**\n"
-                f"Extra hujung sem: **+RM {amount_left:.2f}**"
-            )
+            st.sidebar.success(f"✅ **LEPAS TARGET!**")
     else:
         st.sidebar.error("Duit dah habis bro!")
 
@@ -293,7 +288,7 @@ else:
     col2.metric("Hari Tinggal", f"{days_left}")
     col3.metric("Limit Sehari", status_msg)
 
-    if days_left > 0 and current_balance > 0:
+    if days_left > 0 and balance_after_commitments > 0:
         if daily_budget < 5.00:
             st.error(f"💀 BAHAYA: RM{daily_budget:.2f}. Telur & Kicap.")
         elif daily_budget < 8.00:
@@ -304,18 +299,19 @@ else:
     st.divider()
 
     # ==========================================
-    # 🚀 RUANGAN KOMITMEN BARU (DENGAN BUTANG BAYAR)
+    # 🚀 SECTION KOMITMEN (DENGAN PREVIEW)
     # ==========================================
-    with st.expander(f"📌 Komitmen Wajib (Pending: RM {total_komitmen_pending:.2f})"):
-        st.caption("Klik '💸 Bayar' dan ia akan automatik masuk ke rekod Duit Keluar.")
+    with st.expander(f"📌 Komitmen Wajib"):
+        col_c1, col_c2 = st.columns(2)
+        col_c1.info(f"**Pending:** RM {total_komitmen_pending:.2f}")
+        col_c2.success(f"**Baki Pasca-Komitmen:** RM {balance_after_commitments:.2f}")
         
         # Form tambah komitmen
         with st.form("tambah_komitmen"):
             k_col1, k_col2 = st.columns([3, 1])
-            k_item = k_col1.text_input("Nama (cth: Sewa, Bil Celcom)")
+            k_item = k_col1.text_input("Nama Komitmen")
             k_harga = k_col2.number_input("Jumlah (RM)", min_value=0.0, step=0.1, format="%.2f")
-            
-            if st.form_submit_button("➕ Tambah Komitmen", use_container_width=True):
+            if st.form_submit_button("➕ Tambah Ke Senarai", use_container_width=True):
                 if k_item and k_harga > 0:
                     new_komitmen = pd.DataFrame([{"Item": k_item, "Jumlah": k_harga, "Status": "Belum"}])
                     updated_komitmen = pd.concat([df_komitmen, new_komitmen], ignore_index=True)
@@ -325,32 +321,27 @@ else:
                     
         # List Komitmen
         if not df_komitmen.empty:
-            st.write("**Senarai Komitmen Semasa:**")
             st.divider()
             for i, row in df_komitmen.iterrows():
-                # Adjusted column width to fit buttons nicely
                 c1, c2, c3, c4 = st.columns([2.5, 1, 1.2, 0.5])
                 c1.write(f"▪️ {row['Item']}")
                 c2.write(f"RM {row['Jumlah']:.2f}")
                 
-                # Check Status
                 if row.get('Status', 'Belum') == 'Sudah':
-                    c3.success("✅ Dah Bayar")
+                    c3.success("✅ Terbayar")
                 else:
-                    if c3.button("💸 Bayar", key=f"pay_{i}"):
-                        # 1. Update status jadi 'Sudah' kat Komitmen sheet
+                    if c3.button("💸 Bayar", key=f"pay_{i}", help="Tekan untuk potong dari Baki Nyawa"):
+                        # UPDATE STATUS
                         df_komitmen.at[i, 'Status'] = 'Sudah'
                         conn.update(worksheet="Komitmen", data=df_komitmen)
                         
-                        # 2. Automatik tambah ke Transaksi Duit Keluar
+                        # REKOD TRANSAKSI KELUAR (Barulah baki atas tu tolak)
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        auto_item_name = f"[Komitmen] {row['Item']}"
-                        new_tx = pd.DataFrame([{"Tarikh": ts, "Item": auto_item_name, "Masuk": 0.0, "Keluar": row['Jumlah']}])
+                        new_tx = pd.DataFrame([{"Tarikh": ts, "Item": f"[BIL] {row['Item']}", "Masuk": 0.0, "Keluar": row['Jumlah']}])
                         updated_df = pd.concat([df, new_tx], ignore_index=True)
                         conn.update(worksheet="Transaksi", data=updated_df)
                         
                         st.cache_data.clear()
-                        st.toast(f"✅ {row['Item']} direkod masuk Duit Keluar!")
                         st.rerun()
                         
                 if c4.button("❌", key=f"k_{i}"):
@@ -358,8 +349,6 @@ else:
                     conn.update(worksheet="Komitmen", data=df_k_updated)
                     st.cache_data.clear()
                     st.rerun()
-
-    st.divider()
 
     # INPUT DATA TRANSAKSI HARIAN
     st.subheader("📝 Rekod Transaksi Harian")
@@ -398,14 +387,11 @@ else:
     # SEJARAH & PDF
     st.divider()
     st.subheader("📂 Kewangan")
-    
     if not df.empty:
         col_pdf1, col_pdf2, col_space = st.columns([1, 1, 3])
-        
         with col_pdf1:
             pdf_full = create_pdf(df, current_balance)
             st.download_button("📄 Full Report", pdf_full, f"Laporan_{date.today()}.pdf", "application/pdf")
-            
         with col_pdf2:
             if df['Keluar'].sum() > 0:
                 pdf_out = create_expense_pdf(df)
@@ -431,7 +417,6 @@ else:
                 c2.write(row['Item'])
                 c3.write("-")
                 c4.write(f"{row['Keluar']:.2f}")
-
             if c5.button("❌", key=f"d_{i}"):
                 df_updated = df.drop(i)
                 conn.update(worksheet="Transaksi", data=df_updated)
@@ -441,7 +426,6 @@ else:
         st.info("Tiada rekod.")
 
     st.divider()
-    
     with st.expander("⚙️ Tetapan / Ubah Tarikh"):
         st.write("### 📅 Ubah Tarikh Target")
         new_target_date = st.date_input("Pilih Tarikh Baru:", value=target_date_obj)
@@ -450,7 +434,6 @@ else:
             conn.update(worksheet="Config", data=new_config)
             st.cache_data.clear()
             st.rerun()
-            
         st.divider()
         if st.button("FORMAT / RESET SEMUA DATA", type="primary"):
             conn.clear(worksheet="Transaksi")
