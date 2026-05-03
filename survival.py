@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
 from fpdf import FPDF
+import time # 🚀 TAMBAH IMPORT NI UNTUK DELAY
 
-# 🚀 INTEGRASI GOOGLE SHEETS: Import library baru
+# 🚀 INTEGRASI GOOGLE SHEETS
 from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
@@ -12,7 +13,7 @@ USER_PIN = "030517"
 # --- SETUP PAGE ---
 st.set_page_config(page_title="Estimation Kewangan - ZN", page_icon="📊", layout="wide")
 
-# 🚀 INTEGRASI GOOGLE SHEETS: Panggil connection awal-awal
+# 🚀 Panggil connection awal-awal
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
@@ -36,7 +37,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # ==========================================
-# FUNGSI PDF GENERATOR (Kekal sama macam asal)
+# FUNGSI PDF GENERATOR (Kekal sama)
 # ==========================================
 class PDF(FPDF):
     def __init__(self, title="LAPORAN KEWANGAN"):
@@ -165,10 +166,10 @@ def create_expense_pdf(dataframe):
     return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
-# 🚀 INTEGRASI GOOGLE SHEETS: LOAD DATA BARU
+# 🚀 INTEGRASI GOOGLE SHEETS: LOAD DATA (BUG FIX)
 # ==========================================
 def load_data():
-    # Tambah ttl=0 supaya dia tak simpan cache lama
+    # 1. TRANSAKSI
     try:
         df = conn.read(worksheet="Transaksi", usecols=[0, 1, 2, 3], ttl=0)
         df = df.dropna(how="all") 
@@ -177,19 +178,23 @@ def load_data():
     except:
         df = pd.DataFrame(columns=["Tarikh", "Item", "Masuk", "Keluar"])
     
+    # 2. CONFIG (DENGAN SAFETY NET)
     config = {}
     try:
-        # Tambah ttl=0 kat sini juga
         df_config = conn.read(worksheet="Config", usecols=[0, 1], ttl=0)
         df_config = df_config.dropna(how="all")
         if not df_config.empty:
-            # Kita ambil row paling bawah (terbaru) kalau ada banyak entry
             config['budget'] = float(df_config.iloc[-1]['Budget'])
             config['target_date'] = str(df_config.iloc[-1]['Target_Date'])
+            
+            # SIMPAN DALAM MEMORI (BACKUP)
+            st.session_state['config_backup'] = config
     except Exception as e:
-        pass
+        # KALAU GOOGLE API SANGKUT, GUNA BACKUP
+        if 'config_backup' in st.session_state:
+            config = st.session_state['config_backup']
 
-    # ---> TAMBAH: BACA TAB KOMITMEN <---
+    # 3. KOMITMEN
     try:
         df_komitmen = conn.read(worksheet="Komitmen", usecols=[0, 1, 2], ttl=0)
         df_komitmen = df_komitmen.dropna(how="all")
@@ -200,7 +205,7 @@ def load_data():
     except:
         df_komitmen = pd.DataFrame(columns=["Item", "Jumlah", "Status"])
         
-    return df, config, df_komitmen # Return 3 data
+    return df, config, df_komitmen
 
 # ==========================================
 # MAIN APP
@@ -213,7 +218,7 @@ with st.sidebar:
         st.rerun()
     st.divider()
 
-# TERIMA 3 DATA
+# PANGGIL DATA
 df, config, df_komitmen = load_data()
 
 # --- FASA 1: SETUP ---
@@ -226,13 +231,14 @@ if not config:
         if submitted:
             new_config = pd.DataFrame([{"Budget": input_duit, "Target_Date": str(input_tarikh)}])
             conn.update(worksheet="Config", data=new_config)
-            st.cache_data.clear() # <--- Tambah ni
+            st.cache_data.clear() 
+            time.sleep(1) # Kasi masa bernafas
             st.rerun()
+
 # --- FASA 2: DASHBOARD ---
 else:
     initial_budget = config['budget']
     
-    # Perbaiki isu tarikh dari sheets
     if len(config['target_date']) > 10:
         clean_date = config['target_date'][:10]
     else:
@@ -254,7 +260,7 @@ else:
         status_msg = f"RM {daily_budget:.2f} /hari"
 
     # ==========================================
-    # SIDEBAR: SIMULASI (HARI UTAMA)
+    # SIDEBAR: SIMULASI
     # ==========================================
     if current_balance > 0:
         st.sidebar.header("🧮 Simulation DUIT")
@@ -264,7 +270,6 @@ else:
         
         sim_days = int(current_balance / sim_daily)
         sim_end_date = today + timedelta(days=sim_days)
-        sim_extra = current_balance % sim_daily
         
         st.sidebar.markdown(f"## ⏳ **{sim_days} HARI**")
         st.sidebar.write(f"📅 Tarikh Licin: **{sim_end_date.strftime('%d %b %Y')}**")
@@ -305,9 +310,8 @@ else:
     st.divider()
 
     # ==========================================
-    # ---> SECTION BARU: KOMITMEN SAHAJA <---
+    # ---> SECTION KOMITMEN SAHAJA <---
     # ==========================================
-    total_komitmen = df_komitmen['Jumlah'].sum() if not df_komitmen.empty else 0.0
     total_pending = df_komitmen[df_komitmen['Status'] != 'Sudah']['Jumlah'].sum() if not df_komitmen.empty else 0.0
 
     with st.expander(f"📌 Pengurusan Komitmen (Total Pending: RM {total_pending:.2f})"):
@@ -324,6 +328,7 @@ else:
                     updated_k = pd.concat([df_komitmen, new_k], ignore_index=True)
                     conn.update(worksheet="Komitmen", data=updated_k)
                     st.cache_data.clear()
+                    time.sleep(1) # Kasi masa bernafas
                     st.rerun()
 
         if not df_komitmen.empty:
@@ -337,23 +342,24 @@ else:
                     c3.success("✅ Dibayar")
                 else:
                     if c3.button("💸 Bayar", key=f"pay_{i}"):
-                        # 1. Update status di tab Komitmen
                         df_komitmen.at[i, 'Status'] = 'Sudah'
                         conn.update(worksheet="Komitmen", data=df_komitmen)
+                        time.sleep(0.5) # Rehat sikit antara 2 update
                         
-                        # 2. Rekod masuk ke Transaksi utama supaya Baki Nyawa ditolak
                         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
                         new_tx = pd.DataFrame([{"Tarikh": ts, "Item": f"[Komitmen] {row['Item']}", "Masuk": 0.0, "Keluar": row['Jumlah']}])
                         updated_df = pd.concat([df, new_tx], ignore_index=True)
                         conn.update(worksheet="Transaksi", data=updated_df)
                         
                         st.cache_data.clear()
+                        time.sleep(1) # Kasi masa bernafas
                         st.rerun()
                         
                 if c4.button("❌", key=f"del_k_{i}"):
                     df_k_updated = df_komitmen.drop(i)
                     conn.update(worksheet="Komitmen", data=df_k_updated)
                     st.cache_data.clear()
+                    time.sleep(1) # Kasi masa bernafas
                     st.rerun()
                     
     st.divider()
@@ -370,10 +376,11 @@ else:
             if st.form_submit_button("🔥 TOLAK BAKI", use_container_width=True):
                 if item_out and price_out > 0:
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    # 🚀 INTEGRASI GOOGLE SHEETS: Tolak duit save ke Sheets
                     new_row = pd.DataFrame([{"Tarikh": ts, "Item": item_out, "Masuk": 0.0, "Keluar": price_out}])
                     updated_df = pd.concat([df, new_row], ignore_index=True)
                     conn.update(worksheet="Transaksi", data=updated_df)
+                    st.cache_data.clear()
+                    time.sleep(1) # Kasi masa bernafas
                     st.toast("✅ Disimpan")
                     st.rerun()
 
@@ -385,10 +392,11 @@ else:
             if st.form_submit_button("💚 TAMBAH DUIT", type="primary", use_container_width=True):
                 if item_in and price_in > 0:
                     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    # 🚀 INTEGRASI GOOGLE SHEETS: Tambah duit save ke Sheets
                     new_row = pd.DataFrame([{"Tarikh": ts, "Item": item_in, "Masuk": price_in, "Keluar": 0.0}])
                     updated_df = pd.concat([df, new_row], ignore_index=True)
                     conn.update(worksheet="Transaksi", data=updated_df)
+                    st.cache_data.clear()
+                    time.sleep(1) # Kasi masa bernafas
                     st.balloons()
                     st.rerun()
 
@@ -401,12 +409,12 @@ else:
         
         with col_pdf1:
             pdf_full = create_pdf(df, current_balance)
-            st.download_button("📄 Full Report + Analisa", pdf_full, f"Laporan_Lengkap_{date.today()}.pdf", "application/pdf")
+            st.download_button("📄 Full Report", pdf_full, f"Laporan_{date.today()}.pdf", "application/pdf")
             
         with col_pdf2:
             if df['Keluar'].sum() > 0:
                 pdf_out = create_expense_pdf(df)
-                st.download_button("💸 Report Belanja Sahaja", pdf_out, f"Rekod_Belanja_{date.today()}.pdf", "application/pdf")
+                st.download_button("💸 Report Belanja", pdf_out, f"Rekod_{date.today()}.pdf", "application/pdf")
 
         df_sorted = df.sort_index(ascending=False)
         c1, c2, c3, c4, c5 = st.columns([2, 3, 1.5, 1.5, 1])
@@ -430,9 +438,9 @@ else:
                 c4.write(f"{row['Keluar']:.2f}")
 
             if c5.button("❌", key=f"d_{i}"):
-                # 🚀 INTEGRASI GOOGLE SHEETS: Delete row dari Sheets
                 df_updated = df.drop(i)
                 conn.update(worksheet="Transaksi", data=df_updated)
+                time.sleep(1) # Kasi masa bernafas
                 st.rerun()
     else:
         st.info("Tiada rekod.")
@@ -444,19 +452,19 @@ else:
         st.caption(f"Tarikh sekarang: {target_date_obj.strftime('%d %b %Y')}")
         new_target_date = st.date_input("Pilih Tarikh Baru:", value=target_date_obj)
         if st.button("Simpan Tarikh Baru"):
-            # 🚀 INTEGRASI GOOGLE SHEETS: Update tarikh kat Sheets
             new_config = pd.DataFrame([{"Budget": initial_budget, "Target_Date": str(new_target_date)}])
             conn.update(worksheet="Config", data=new_config)
+            st.cache_data.clear()
+            time.sleep(1) # Kasi masa bernafas
             st.rerun()
             
         st.divider()
         if st.button("FORMAT / RESET SEMUA DATA", type="primary"):
-            # 🚀 INTEGRASI GOOGLE SHEETS: Clear data dalam Sheets
             conn.clear(worksheet="Transaksi")
             conn.clear(worksheet="Config")
-            # Clear tab Komitmen sekali kalau buat reset
             try:
                 conn.clear(worksheet="Komitmen")
             except:
                 pass
+            time.sleep(1) # Kasi masa bernafas
             st.rerun()
