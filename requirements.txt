@@ -1,5 +1,2 @@
 streamlit
 streamlit.components.v1
-pandas
-fpdf
-st-gsheets-connection
